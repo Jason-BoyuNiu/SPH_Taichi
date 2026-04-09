@@ -10,6 +10,8 @@ import taichi as ti
 from config_builder import SimConfig
 from particle_system import ParticleSystem
 
+from tqdm import tqdm
+
 
 ti.init(arch=ti.gpu, device_memory_fraction=0.5)
 
@@ -219,7 +221,7 @@ def main():
 
     rng = np.random.default_rng(args.seed)
 
-    for frame_idx in range(args.frames):
+    for frame_idx in tqdm(range(args.frames), desc="Rendering frames"):
         for _ in range(substeps):
             solver.step()
 
@@ -259,14 +261,12 @@ def main():
 
         frame_file = output_dir / f"{frame_idx:06d}.png"
         ti.tools.imwrite(frame, str(frame_file))
-        print(f"[{frame_idx + 1}/{args.frames}] wrote {frame_file}")
 
     encoded = try_encode_video_with_ffmpeg(output_dir, args.fps, output_video)
     if encoded:
         print(f"Video encoded: {output_video}")
     else:
-        print("ffmpeg not available or encoding failed; PNG frame sequence is still available:")
-        print(output_dir)
+        print(f"ffmpeg not available or encoding failed; PNG frame sequence is still available in {output_dir}")
         print(f"Use ffmpeg manually, for example:\nffmpeg -y -framerate {args.fps} -i {output_dir / '%06d.png'} -pix_fmt yuv420p -vcodec libx264 {output_video}")
 
 

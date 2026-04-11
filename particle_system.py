@@ -111,6 +111,7 @@ class ParticleSystem:
         self.material = ti.field(dtype=int, shape=self.particle_max_num)
         self.color = ti.Vector.field(3, dtype=int, shape=self.particle_max_num)
         self.is_dynamic = ti.field(dtype=int, shape=self.particle_max_num)
+        self.normal = ti.Vector.field(self.dim, dtype=float, shape=self.particle_max_num)
 
         if self.cfg.get_cfg("simulationMethod") == 4:
             self.dfsph_factor = ti.field(dtype=float, shape=self.particle_max_num)
@@ -388,6 +389,45 @@ class ParticleSystem:
     def copy_to_numpy(self, np_arr: ti.types.ndarray(), src_arr: ti.template()):
         for i in range(self.particle_num[None]):
             np_arr[i] = src_arr[i]
+
+    @ti.kernel
+    def compute_surface_normals(self, radius_scale: float, min_neighbors: int):
+        h = self.support_radius * radius_scale
+        for p_i in range(self.particle_num[None]):
+            n = ti.Vector.zero(float, self.dim)
+            cnt = 0
+            if self.material[p_i] == self.material_fluid:
+                x_i = self.x[p_i]
+                center_cell = self.pos_to_index(x_i)
+                for offset in ti.grouped(ti.ndrange(*((-1, 2),) * self.dim)):
+                    cell = center_cell + offset
+                    in_bounds = True
+                    if ti.static(self.dim >= 1):
+                        in_bounds = in_bounds and (0 <= cell[0] and cell[0] < self.grid_num[0])
+                    if ti.static(self.dim >= 2):
+                        in_bounds = in_bounds and (0 <= cell[1] and cell[1] < self.grid_num[1])
+                    if ti.static(self.dim >= 3):
+                        in_bounds = in_bounds and (0 <= cell[2] and cell[2] < self.grid_num[2])
+                    if in_bounds:
+                        flat = self.flatten_grid_index(cell)
+                        start = 0
+                        if flat > 0:
+                            start = self.grid_particles_num[flat - 1]
+                        end = self.grid_particles_num[flat]
+                        for p_j in range(start, end):
+                            if p_i != p_j and self.material[p_j] == self.material_fluid:
+                                r = x_i - self.x[p_j]
+                                r_len = r.norm()
+                                if 1e-6 < r_len and r_len < h:
+                                    q = 1.0 - r_len / h
+                                    n += (r / r_len) * (q * q)
+                                    cnt += 1
+                if cnt >= min_neighbors and n.norm() > 1e-6:
+                    self.normal[p_i] = n.normalized()
+                else:
+                    self.normal[p_i] = ti.Vector.zero(float, self.dim)
+            else:
+                self.normal[p_i] = ti.Vector.zero(float, self.dim)
     
     def copy_to_vis_buffer(self, invisible_objects=[]):
         if len(invisible_objects) != 0:

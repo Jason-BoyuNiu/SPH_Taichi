@@ -46,6 +46,15 @@ def normalize_last_dim(v: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     return v / np.maximum(n, eps)
 
 
+def snell_refract(view_dir: np.ndarray, normal: np.ndarray, eta: float):
+    """Snell's law refraction. eta = n_incident / n_transmitted (e.g. 1.0/1.333 for air→water)."""
+    cos_i = np.clip(np.sum(-view_dir * normal, axis=-1, keepdims=True), 0.0, 1.0)
+    sin2_t = eta * eta * (1.0 - cos_i * cos_i)
+    cos_t = np.sqrt(np.maximum(1.0 - sin2_t, 0.0))
+    refract_dir = eta * view_dir + (eta * cos_i - cos_t) * normal
+    return normalize_last_dim(refract_dir)
+
+
 def build_background_image(
     width: int,
     height: int,
@@ -156,7 +165,10 @@ def gaussian_splat_render(
     max_sigma: float,
     max_kernel_radius: int,
     absorption_coeff: np.ndarray,
-    refraction_strength: float,
+    ior: float,
+    ior_dispersion: float,
+    refraction_bg_depth: float,
+    normal_blur_passes: int,
     normal_strength: float,
     specular_strength: float,
     fresnel_f0: float,
@@ -198,6 +210,7 @@ def gaussian_splat_render(
 
     u = u[in_view]
     v = v[in_view]
+    z = z[in_view]
     sigma = sigma[in_view]
     radius_px = radius_px[in_view]
     c = c[in_view]
@@ -256,6 +269,12 @@ def gaussian_splat_render(
     n_len = np.sqrt(nx * nx + ny * ny + nz * nz) + 1e-6
     normal_screen = np.stack([nx / n_len, ny / n_len, nz / n_len], axis=-1)
 
+    # Smooth accumulated normals to reduce high-frequency particle-boundary noise.
+    if normal_blur_passes > 0:
+        mask_f = mask.astype(np.float32)
+        for ch in range(3):
+            accum_normal[..., ch] = blur_box_3x3(accum_normal[..., ch] * mask_f, normal_blur_passes)
+
     normal_particle = normalize_last_dim(accum_normal)
     if normal_source == "particle":
         normal = normal_particle
@@ -265,21 +284,9 @@ def gaussian_splat_render(
         mix = np.clip(particle_normal_mix, 0.0, 1.0)
         normal = normalize_last_dim(mix * normal_particle + (1.0 - mix) * normal_screen)
 
-    # Refraction: sample shifted background image.
+    # Per-pixel screen coordinates and view ray (shared by refraction and Fresnel).
     xs = np.arange(width, dtype=np.float32)[None, :]
     ys = np.arange(height, dtype=np.float32)[:, None]
-    refraction_mag = refraction_strength * np.clip(1.0 - np.exp(-tau), 0.0, 1.0)
-    offset_scale = min(width, height) * refraction_mag
-    sample_u = xs + normal[..., 0] * offset_scale
-    sample_v = ys - normal[..., 1] * offset_scale
-    bg_refracted = sample_image_bilinear(background_image, sample_u, sample_v)
-
-    # Beer-Lambert transmittance.
-    transmittance = np.exp(-tau[..., None] * absorption_coeff[None, None, :])
-    diffuse = transmittance * bg_refracted + (1.0 - transmittance) * tint
-
-    # Fresnel + procedural environment-map specular.
-    f = 0.5 * height / math.tan(math.radians(fov_deg * 0.5))
     ray_x = (xs + 0.5 - 0.5 * width) / f
     ray_y = -(ys + 0.5 - 0.5 * height) / f
     ray_z = np.ones((height, width), dtype=np.float32)
@@ -290,6 +297,31 @@ def gaussian_splat_render(
     # Orient normal towards the viewer to avoid back-face flips from noisy estimates.
     flip = np.sum(normal * view_dir, axis=-1, keepdims=True) < 0.0
     normal = np.where(flip, -normal, normal)
+
+    # Physically-based Snell's law refraction with chromatic dispersion.
+    # Each RGB channel uses a slightly different IOR (dispersion in water: R < G < B).
+    # du/dv = f * (slope of refracted ray - slope of incident ray) * refraction_bg_depth.
+    inc_slope_x = ray_dir[..., 0] / (ray_dir[..., 2] + 1e-6)
+    inc_slope_y = ray_dir[..., 1] / (ray_dir[..., 2] + 1e-6)
+    fluid_alpha = np.clip(1.0 - np.exp(-tau), 0.0, 1.0)
+    bg_channels = []
+    for ior_c in (ior - ior_dispersion, ior, ior + ior_dispersion):
+        refract_dir = snell_refract(ray_dir, normal, 1.0 / ior_c)
+        du = f * (refract_dir[..., 0] / (refract_dir[..., 2] + 1e-6) - inc_slope_x)
+        dv = f * (refract_dir[..., 1] / (refract_dir[..., 2] + 1e-6) - inc_slope_y)
+        su = xs + du * refraction_bg_depth * fluid_alpha
+        sv = ys - dv * refraction_bg_depth * fluid_alpha
+        bg_channels.append(sample_image_bilinear(background_image, su, sv))
+    # Recombine channels: R from IOR_R sample, G from IOR_G, B from IOR_B.
+    bg_refracted = np.stack(
+        [bg_channels[0][..., 0], bg_channels[1][..., 1], bg_channels[2][..., 2]], axis=-1
+    )
+
+    # Beer-Lambert transmittance.
+    transmittance = np.exp(-tau[..., None] * absorption_coeff[None, None, :])
+    diffuse = transmittance * bg_refracted + (1.0 - transmittance) * tint
+
+    # Fresnel + procedural environment-map specular.
     ndotv = np.clip(np.sum(normal * view_dir, axis=-1), 0.0, 1.0)
     fresnel = fresnel_f0 + (1.0 - fresnel_f0) * np.power(1.0 - ndotv, 5.0)
     reflect_dir = 2.0 * ndotv[..., None] * normal - view_dir
@@ -361,7 +393,10 @@ def main():
     parser.add_argument("--max_sigma", type=float, default=6.0)
     parser.add_argument("--max_kernel_radius", type=int, default=18, help="Clamp per-particle kernel radius in pixels")
     parser.add_argument("--absorption", default="2.4,1.2,0.35", help="Beer-Lambert absorption coeff RGB")
-    parser.add_argument("--refraction_strength", type=float, default=0.02, help="Normal-based UV distortion amount")
+    parser.add_argument("--ior", type=float, default=1.333, help="Index of refraction (1.333 water, 1.5 glass)")
+    parser.add_argument("--ior_dispersion", type=float, default=0.004, help="IOR half-spread for chromatic dispersion (0 disables)")
+    parser.add_argument("--refraction_bg_depth", type=float, default=0.5, help="Estimated scene depth behind fluid surface (scene units)")
+    parser.add_argument("--normal_blur_passes", type=int, default=1, help="Box-blur passes on accumulated normals to reduce particle noise")
     parser.add_argument("--normal_strength", type=float, default=95.0, help="Amplifies depth-gradient normal")
     parser.add_argument("--specular_strength", type=float, default=0.85, help="Environment specular amount")
     parser.add_argument("--fresnel_f0", type=float, default=0.02, help="Base Fresnel reflectance")
@@ -495,7 +530,10 @@ def main():
             max_sigma=args.max_sigma,
             max_kernel_radius=args.max_kernel_radius,
             absorption_coeff=absorption,
-            refraction_strength=args.refraction_strength,
+            ior=args.ior,
+            ior_dispersion=args.ior_dispersion,
+            refraction_bg_depth=args.refraction_bg_depth,
+            normal_blur_passes=args.normal_blur_passes,
             normal_strength=args.normal_strength,
             specular_strength=args.specular_strength,
             fresnel_f0=args.fresnel_f0,

@@ -39,6 +39,32 @@ def world_to_camera(points_world: np.ndarray, eye: np.ndarray, basis: np.ndarray
     return (points_world - eye[None, :]) @ basis.T
 
 
+def kinetic_to_white_red_colors(
+    velocity: np.ndarray,
+    is_fluid: np.ndarray,
+    fallback_colors: np.ndarray,
+    high_percentile: float = 95.0,
+) -> np.ndarray:
+    # Kinetic energy per unit mass: 0.5 * |v|^2
+    ke = 0.5 * np.sum(velocity * velocity, axis=1)
+    out = fallback_colors.copy()
+
+    fluid_idx = np.where(is_fluid)[0]
+    if fluid_idx.size == 0:
+        return out
+
+    fluid_ke = ke[fluid_idx]
+    ke_hi = np.percentile(fluid_ke, high_percentile)
+    ke_hi = max(float(ke_hi), 1e-8)
+    t = np.clip(fluid_ke / ke_hi, 0.0, 1.0)
+
+    # White (low) -> Red (high): [1,1,1] -> [1,0,0]
+    out[fluid_idx, 0] = 1.0
+    out[fluid_idx, 1] = 1.0 - t
+    out[fluid_idx, 2] = 1.0 - t
+    return out
+
+
 def gaussian_splat_render(
     points_world: np.ndarray,
     colors: np.ndarray,
@@ -155,7 +181,7 @@ def try_encode_video_with_ffmpeg(frames_dir: Path, fps: int, output_video: Path)
 def main():
     parser = argparse.ArgumentParser(description="SPH simulation + 3D Gaussian splatting renderer")
     parser.add_argument("--scene_file", required=True, help="Path to scene json")
-    parser.add_argument("--frames", type=int, default=240, help="How many rendered frames to output")
+    parser.add_argument("--frames", type=int, default=120, help="How many rendered frames to output")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS for output video")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
@@ -170,6 +196,12 @@ def main():
     parser.add_argument("--min_sigma", type=float, default=0.6)
     parser.add_argument("--max_sigma", type=float, default=6.0)
     parser.add_argument("--max_kernel_radius", type=int, default=18, help="Clamp per-particle kernel radius in pixels")
+    parser.add_argument(
+        "--kinetic_percentile",
+        type=float,
+        default=95.0,
+        help="Fluid kinetic-energy percentile mapped to pure red (lower value => more red overall)",
+    )
     parser.add_argument(
         "--max_render_particles",
         type=int,
@@ -187,7 +219,7 @@ def main():
     parser.add_argument(
         "--substeps_override",
         type=int,
-        default=-1,
+        default=84,
         help="If >0, overrides numberOfStepsPerRenderUpdate from scene config",
     )
     args = parser.parse_args()
@@ -225,18 +257,31 @@ def main():
 
         n = ps.particle_num[None]
         pos = ps.x.to_numpy()[:n].astype(np.float32)
-        col = (ps.color.to_numpy()[:n].astype(np.float32) / 255.0).clip(0.0, 1.0)
+        vel = ps.v.to_numpy()[:n].astype(np.float32)
+        mat = ps.material.to_numpy()[:n]
+        base_col = (ps.color.to_numpy()[:n].astype(np.float32) / 255.0).clip(0.0, 1.0)
         obj_id = ps.object_id.to_numpy()[:n]
 
         if invisible_objects:
             mask = ~np.isin(obj_id, list(invisible_objects))
             pos = pos[mask]
-            col = col[mask]
+            vel = vel[mask]
+            mat = mat[mask]
+            base_col = base_col[mask]
 
         if args.max_render_particles > 0 and pos.shape[0] > args.max_render_particles:
             sample_idx = rng.choice(pos.shape[0], size=args.max_render_particles, replace=False)
             pos = pos[sample_idx]
-            col = col[sample_idx]
+            vel = vel[sample_idx]
+            mat = mat[sample_idx]
+            base_col = base_col[sample_idx]
+
+        col = kinetic_to_white_red_colors(
+            velocity=vel,
+            is_fluid=(mat == ps.material_fluid),
+            fallback_colors=base_col,
+            high_percentile=args.kinetic_percentile,
+        )
 
         frame = gaussian_splat_render(
             points_world=pos,
@@ -258,7 +303,10 @@ def main():
         )
 
         frame_file = output_dir / f"{frame_idx:06d}.png"
-        ti.tools.imwrite(frame, str(frame_file))
+        # ti.tools.imwrite expects image layout as (W, H, C) and writes Y bottom-up.
+        # Renderer output is (H, W, C) with top-left as origin, so we flip Y then swap axes.
+        frame_for_taichi = np.swapaxes(frame[::-1, :, :], 0, 1)
+        ti.tools.imwrite(frame_for_taichi, str(frame_file))
         print(f"[{frame_idx + 1}/{args.frames}] wrote {frame_file}")
 
     encoded = try_encode_video_with_ffmpeg(output_dir, args.fps, output_video)

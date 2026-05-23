@@ -369,7 +369,7 @@ def try_encode_video_with_ffmpeg(frames_dir: Path, fps: int, output_video: Path)
 def main():
     parser = argparse.ArgumentParser(description="SPH simulation + 3D Gaussian splatting renderer")
     parser.add_argument("--scene_file", required=True, help="Path to scene json")
-    parser.add_argument("--frames", type=int, default=240, help="How many rendered frames to output")
+    parser.add_argument("--frames", type=int, default=600, help="How many rendered frames to output")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS for output video")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
@@ -387,12 +387,12 @@ def main():
         choices=["plain", "studio", "checker"],
         help="Background pattern for better refraction cues",
     )
-    parser.add_argument("--sigma_scale", type=float, default=1.6, help="Controls Gaussian footprint size")
-    parser.add_argument("--alpha_scale", type=float, default=0.75, help="Controls thickness contribution per splat")
+    parser.add_argument("--sigma_scale", type=float, default=1.8, help="Controls Gaussian footprint size")
+    parser.add_argument("--alpha_scale", type=float, default=0.4, help="Controls thickness contribution per splat")
     parser.add_argument("--min_sigma", type=float, default=0.6)
     parser.add_argument("--max_sigma", type=float, default=6.0)
     parser.add_argument("--max_kernel_radius", type=int, default=18, help="Clamp per-particle kernel radius in pixels")
-    parser.add_argument("--absorption", default="2.4,1.2,0.35", help="Beer-Lambert absorption coeff RGB")
+    parser.add_argument("--absorption", default="1.0,0.5,0.1", help="Beer-Lambert absorption coeff RGB")
     parser.add_argument("--ior", type=float, default=1.333, help="Index of refraction (1.333 water, 1.5 glass)")
     parser.add_argument("--ior_dispersion", type=float, default=0.004, help="IOR half-spread for chromatic dispersion (0 disables)")
     parser.add_argument("--refraction_bg_depth", type=float, default=0.5, help="Estimated scene depth behind fluid surface (scene units)")
@@ -401,7 +401,7 @@ def main():
     parser.add_argument("--specular_strength", type=float, default=0.85, help="Environment specular amount")
     parser.add_argument("--fresnel_f0", type=float, default=0.02, help="Base Fresnel reflectance")
     parser.add_argument("--sun_power", type=float, default=384.0, help="Procedural sun highlight sharpness")
-    parser.add_argument("--opacity_gain", type=float, default=1.4, help="Opacity growth against accumulated thickness")
+    parser.add_argument("--opacity_gain", type=float, default=0.8, help="Opacity growth against accumulated thickness")
     parser.add_argument("--thickness_blur_passes", type=int, default=1, help="Smoothing passes before normal extraction")
     parser.add_argument(
         "--normal_source",
@@ -434,7 +434,7 @@ def main():
     parser.add_argument(
         "--substeps_override",
         type=int,
-        default=100,
+        default=25,
         help="If >0, overrides numberOfStepsPerRenderUpdate from scene config",
     )
     args = parser.parse_args()

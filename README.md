@@ -56,3 +56,5 @@ rigid-fluid coupling for incompressible SPH. ACM Transactions on Graphics 31, 4 
 ## Acknowledgement
 Implementation is largely inspired by [SPlisHSPlasH](https://github.com/InteractiveComputerGraphics/SPlisHSPlasH).
  
+## How to do sph-gaussian experiment by nby
+python -u scan_trapezoid_basin.py --output_root scan_runs/trapezoid_basin_batch_20260521_sub82_test --basin_lengths 1.8 --tailwater_depths 0.12 --inflow_speeds 3.2 --frames 160 --substeps_override 82

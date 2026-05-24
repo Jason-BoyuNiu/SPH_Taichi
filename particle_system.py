@@ -38,6 +38,8 @@ class ParticleSystem:
         self.m_V0 = 0.8 * self.particle_diameter ** self.dim
 
         self.particle_num = ti.field(int, shape=())
+        self.current_step = 0
+        self.sim_time = 0.0
 
         # Grid related properties
         self.grid_size = self.support_radius
@@ -54,7 +56,10 @@ class ParticleSystem:
         fluid_blocks = self.cfg.get_fluid_blocks()
         fluid_particle_num = 0
         for fluid in fluid_blocks:
-            particle_num = self.compute_cube_particle_num(fluid["start"], fluid["end"])
+            start = np.array(fluid["start"]) + np.array(fluid["translation"])
+            end = np.array(fluid["end"]) + np.array(fluid["translation"])
+            scale = np.array(fluid["scale"])
+            particle_num = self.compute_cube_particle_num(start, start + (end - start) * scale)
             fluid["particleNum"] = particle_num
             self.object_collection[fluid["objectId"]] = fluid
             fluid_particle_num += particle_num
@@ -63,7 +68,10 @@ class ParticleSystem:
         rigid_blocks = self.cfg.get_rigid_blocks()
         rigid_particle_num = 0
         for rigid in rigid_blocks:
-            particle_num = self.compute_cube_particle_num(rigid["start"], rigid["end"])
+            start = np.array(rigid["start"]) + np.array(rigid["translation"])
+            end = np.array(rigid["end"]) + np.array(rigid["translation"])
+            scale = np.array(rigid["scale"])
+            particle_num = self.compute_cube_particle_num(start, start + (end - start) * scale)
             rigid["particleNum"] = particle_num
             self.object_collection[rigid["objectId"]] = rigid
             rigid_particle_num += particle_num
@@ -77,10 +85,12 @@ class ParticleSystem:
             self.object_collection[rigid_body["objectId"]] = rigid_body
             rigid_particle_num += voxelized_points_np.shape[0]
         
-        self.fluid_particle_num = fluid_particle_num
+        self.fluid_particle_num_total = fluid_particle_num
+        self.fluid_particle_num = 0
         self.solid_particle_num = rigid_particle_num
         self.particle_max_num = fluid_particle_num + rigid_particle_num
         self.num_rigid_bodies = len(rigid_blocks)+len(rigid_bodies)
+        self.pending_fluid_blocks = []
 
         #### TODO: Handle the Particle Emitter ####
         # self.particle_max_num += emitted particles
@@ -150,21 +160,24 @@ class ParticleSystem:
         # Fluid block
         for fluid in fluid_blocks:
             obj_id = fluid["objectId"]
-            offset = np.array(fluid["translation"])
-            start = np.array(fluid["start"]) + offset
-            end = np.array(fluid["end"]) + offset
-            scale = np.array(fluid["scale"])
-            velocity = fluid["velocity"]
-            density = fluid["density"]
-            color = fluid["color"]
-            self.add_cube(object_id=obj_id,
-                          lower_corner=start,
-                          cube_size=(end-start)*scale,
-                          velocity=velocity,
-                          density=density, 
-                          is_dynamic=1, # enforce fluid dynamic
-                          color=color,
-                          material=1) # 1 indicates fluid
+            start_time = float(fluid.get("startTime", 0.0))
+            start_step = fluid.get("startStep", None)
+            block_spec = {
+                "objectId": obj_id,
+                "start": np.array(fluid["start"]),
+                "end": np.array(fluid["end"]),
+                "translation": np.array(fluid["translation"]),
+                "scale": np.array(fluid["scale"]),
+                "velocity": fluid["velocity"],
+                "density": fluid["density"],
+                "color": fluid["color"],
+                "startTime": start_time,
+                "startStep": start_step,
+            }
+            if self._should_emit_block(block_spec):
+                self.emit_fluid_block(block_spec)
+            else:
+                self.pending_fluid_blocks.append(block_spec)
         
         # TODO: Handle rigid block
         # Rigid block
@@ -245,7 +258,12 @@ class ParticleSystem:
                       new_particles_is_dynamic: ti.types.ndarray(),
                       new_particles_color: ti.types.ndarray()
                       ):
-        
+        if self.particle_num[None] + new_particles_num > self.particle_max_num:
+            raise RuntimeError("Particle buffer overflow when adding particles.")
+
+        new_fluid_particles = int(np.count_nonzero(new_particles_material == self.material_fluid))
+        self.fluid_particle_num += new_fluid_particles
+
         self._add_particles(object_id,
                       new_particles_num,
                       new_particles_positions,
@@ -312,7 +330,7 @@ class ParticleSystem:
     def update_grid_id(self):
         for I in ti.grouped(self.grid_particles_num):
             self.grid_particles_num[I] = 0
-        for I in ti.grouped(self.x):
+        for I in range(self.particle_num[None]):
             grid_index = self.get_flatten_grid_index(self.x[I])
             self.grid_ids[I] = grid_index
             ti.atomic_add(self.grid_particles_num[grid_index], 1)
@@ -321,15 +339,14 @@ class ParticleSystem:
     
     @ti.kernel
     def counting_sort(self):
-        # FIXME: make it the actual particle num
-        for i in range(self.particle_max_num):
-            I = self.particle_max_num - 1 - i
+        for i in range(self.particle_num[None]):
+            I = self.particle_num[None] - 1 - i
             base_offset = 0
             if self.grid_ids[I] - 1 >= 0:
                 base_offset = self.grid_particles_num[self.grid_ids[I]-1]
             self.grid_ids_new[I] = ti.atomic_sub(self.grid_particles_num_temp[self.grid_ids[I]], 1) - 1 + base_offset
 
-        for I in ti.grouped(self.grid_ids):
+        for I in range(self.particle_num[None]):
             new_index = self.grid_ids_new[I]
             self.grid_ids_buffer[new_index] = self.grid_ids[I]
             self.object_id_buffer[new_index] = self.object_id[I]
@@ -349,7 +366,7 @@ class ParticleSystem:
                 self.dfsph_factor_buffer[new_index] = self.dfsph_factor[I]
                 self.density_adv_buffer[new_index] = self.density_adv[I]
         
-        for I in ti.grouped(self.x):
+        for I in range(self.particle_num[None]):
             self.grid_ids[I] = self.grid_ids_buffer[I]
             self.object_id[I] = self.object_id_buffer[I]
             self.x_0[I] = self.x_0_buffer[I]
@@ -381,7 +398,7 @@ class ParticleSystem:
         for offset in ti.grouped(ti.ndrange(*((-1, 2),) * self.dim)):
             grid_index = self.flatten_grid_index(center_cell + offset)
             for p_j in range(self.grid_particles_num[ti.max(0, grid_index-1)], self.grid_particles_num[grid_index]):
-                if p_i[0] != p_j and (self.x[p_i] - self.x[p_j]).norm() < self.support_radius:
+                if p_i != p_j and (self.x[p_i] - self.x[p_j]).norm() < self.support_radius:
                     task(p_i, p_j, ret)
 
     @ti.kernel
@@ -400,11 +417,44 @@ class ParticleSystem:
     @ti.kernel
     def _copy_to_vis_buffer(self, obj_id: int):
         assert self.GGUI
-        # FIXME: make it equal to actual particle num
-        for i in range(self.particle_max_num):
+        for i in range(self.particle_num[None]):
             if self.object_id[i] == obj_id:
                 self.x_vis_buffer[i] = self.x[i]
                 self.color_vis_buffer[i] = self.color[i] / 255.0
+
+    def _should_emit_block(self, block_spec):
+        start_step = block_spec.get("startStep")
+        if start_step is not None:
+            return self.current_step >= int(start_step)
+        return self.sim_time >= float(block_spec.get("startTime", 0.0))
+
+    def emit_fluid_block(self, block_spec):
+        obj_id = block_spec["objectId"]
+        start = block_spec["start"] + block_spec["translation"]
+        end = block_spec["end"] + block_spec["translation"]
+        scale = block_spec["scale"]
+        velocity = block_spec["velocity"]
+        density = block_spec["density"]
+        color = block_spec["color"]
+        self.add_cube(object_id=obj_id,
+                      lower_corner=start,
+                      cube_size=(end-start)*scale,
+                      velocity=velocity,
+                      density=density,
+                      is_dynamic=1,
+                      color=color,
+                      material=1)
+
+    def emit_scheduled_fluid_blocks(self):
+        if len(self.pending_fluid_blocks) == 0:
+            return
+        remain = []
+        for block in self.pending_fluid_blocks:
+            if self._should_emit_block(block):
+                self.emit_fluid_block(block)
+            else:
+                remain.append(block)
+        self.pending_fluid_blocks = remain
 
     def dump(self, obj_id):
         np_object_id = self.object_id.to_numpy()
@@ -435,14 +485,19 @@ class ParticleSystem:
         rigid_body["mesh"] = mesh_backup
         rigid_body["restPosition"] = mesh_backup.vertices
         rigid_body["restCenterOfMass"] = mesh_backup.vertices.mean(axis=0)
-        is_success = tm.repair.fill_holes(mesh)
-            # print("Is the mesh successfully repaired? ", is_success)
+        voxel_mode = str(rigid_body.get("voxelMode", "fill")).lower()
+        repair_holes = rigid_body.get("repairHoles", voxel_mode != "hollow")
+        if repair_holes:
+            tm.repair.fill_holes(mesh)
+
         voxelized_mesh = mesh.voxelized(pitch=self.particle_diameter)
-        voxelized_mesh = mesh.voxelized(pitch=self.particle_diameter).fill()
-        # voxelized_mesh = mesh.voxelized(pitch=self.particle_diameter).hollow()
-        # voxelized_mesh.show()
+        if voxel_mode == "hollow":
+            voxelized_mesh = voxelized_mesh.hollow()
+        else:
+            voxelized_mesh = voxelized_mesh.fill()
+
         voxelized_points_np = voxelized_mesh.points
-        print(f"rigid body {obj_id} num: {voxelized_points_np.shape[0]}")
+        print(f"rigid body {obj_id} num: {voxelized_points_np.shape[0]}, voxelMode={voxel_mode}")
         
         return voxelized_points_np
 

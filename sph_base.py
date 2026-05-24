@@ -90,7 +90,7 @@ class SPHBase:
 
     @ti.kernel
     def compute_static_boundary_volume(self):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if not self.ps.is_static_rigid_body(p_i):
                 continue
             delta = self.cubic_kernel(0.0)
@@ -105,7 +105,7 @@ class SPHBase:
 
     @ti.kernel
     def compute_moving_boundary_volume(self):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if not self.ps.is_dynamic_rigid_body(p_i):
                 continue
             delta = self.cubic_kernel(0.0)
@@ -124,7 +124,7 @@ class SPHBase:
 
     @ti.kernel
     def enforce_boundary_2D(self, particle_type:int):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] == particle_type and self.ps.is_dynamic[p_i]: 
                 pos = self.ps.x[p_i]
                 collision_normal = ti.Vector([0.0, 0.0])
@@ -148,7 +148,7 @@ class SPHBase:
 
     @ti.kernel
     def enforce_boundary_3D(self, particle_type:int):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] == particle_type and self.ps.is_dynamic[p_i]:
                 pos = self.ps.x[p_i]
                 collision_normal = ti.Vector([0.0, 0.0, 0.0])
@@ -261,6 +261,7 @@ class SPHBase:
 
 
     def step(self):
+        self.ps.emit_scheduled_fluid_blocks()
         self.ps.initialize_particle_system()
         self.compute_moving_boundary_volume()
         self.substep()
@@ -269,3 +270,5 @@ class SPHBase:
             self.enforce_boundary_2D(self.ps.material_fluid)
         elif self.ps.dim == 3:
             self.enforce_boundary_3D(self.ps.material_fluid)
+        self.ps.current_step += 1
+        self.ps.sim_time += float(self.dt[None])

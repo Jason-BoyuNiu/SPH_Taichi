@@ -36,8 +36,7 @@ class DFSPHSolver(SPHBase):
 
     @ti.kernel
     def compute_densities(self):
-        # for p_i in range(self.ps.particle_num[None]):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] != self.ps.material_fluid:
                 continue
             self.ps.density[p_i] = self.ps.m_V[p_i] * self.cubic_kernel(0.0)
@@ -89,7 +88,7 @@ class DFSPHSolver(SPHBase):
 
     @ti.kernel
     def compute_non_pressure_forces(self):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.is_static_rigid_body(p_i):
                 self.ps.acceleration[p_i].fill(0.0)
                 continue
@@ -105,7 +104,7 @@ class DFSPHSolver(SPHBase):
     @ti.kernel
     def advect(self):
         # Update position
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.is_dynamic[p_i]:
                 if self.ps.is_dynamic_rigid_body(p_i):
                     self.ps.v[p_i] += self.dt[None] * self.ps.acceleration[p_i]
@@ -114,7 +113,7 @@ class DFSPHSolver(SPHBase):
 
     @ti.kernel
     def compute_DFSPH_factor(self):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] != self.ps.material_fluid:
                 continue
             sum_grad_p_k = 0.0
@@ -157,7 +156,7 @@ class DFSPHSolver(SPHBase):
 
     @ti.kernel
     def compute_density_change(self):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] != self.ps.material_fluid:
                 continue
             ret = ti.Struct(density_adv=0.0, num_neighbors=0)
@@ -196,7 +195,7 @@ class DFSPHSolver(SPHBase):
 
     @ti.kernel
     def compute_density_adv(self):
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] != self.ps.material_fluid:
                 continue
             delta = 0.0
@@ -221,14 +220,14 @@ class DFSPHSolver(SPHBase):
     @ti.kernel
     def compute_density_error(self, offset: float) -> float:
         density_error = 0.0
-        for I in ti.grouped(self.ps.x):
+        for I in range(self.ps.particle_num[None]):
             if self.ps.material[I] == self.ps.material_fluid:
                 density_error += self.density_0 * self.ps.density_adv[I] - offset
         return density_error
 
     @ti.kernel
     def multiply_time_step(self, field: ti.template(), time_step: float):
-        for I in ti.grouped(self.ps.x):
+        for I in range(self.ps.particle_num[None]):
             if self.ps.material[I] == self.ps.material_fluid:
                 field[I] *= time_step
 
@@ -271,13 +270,13 @@ class DFSPHSolver(SPHBase):
         self.divergence_solver_iteration_kernel()
         self.compute_density_change()
         density_err = self.compute_density_error(0.0)
-        return density_err / self.ps.fluid_particle_num
+        return density_err / max(1, self.ps.fluid_particle_num)
 
 
     @ti.kernel
     def divergence_solver_iteration_kernel(self):
         # Perform Jacobi iteration
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] != self.ps.material_fluid:
                 continue
             # evaluate rhs
@@ -347,13 +346,13 @@ class DFSPHSolver(SPHBase):
         self.pressure_solve_iteration_kernel()
         self.compute_density_adv()
         density_err = self.compute_density_error(self.density_0)
-        return density_err / self.ps.fluid_particle_num
+        return density_err / max(1, self.ps.fluid_particle_num)
 
     
     @ti.kernel
     def pressure_solve_iteration_kernel(self):
         # Compute pressure forces
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.material[p_i] != self.ps.material_fluid:
                 continue
             # Evaluate rhs
@@ -392,7 +391,7 @@ class DFSPHSolver(SPHBase):
     @ti.kernel
     def predict_velocity(self):
         # compute new velocities only considering non-pressure forces
-        for p_i in ti.grouped(self.ps.x):
+        for p_i in range(self.ps.particle_num[None]):
             if self.ps.is_dynamic[p_i] and self.ps.material[p_i] == self.ps.material_fluid:
                 self.ps.v[p_i] += self.dt[None] * self.ps.acceleration[p_i]
 

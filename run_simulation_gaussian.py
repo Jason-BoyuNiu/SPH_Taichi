@@ -1,9 +1,8 @@
 import argparse
 import math
-import shutil
-import subprocess
 from pathlib import Path
 
+import cv2
 import numpy as np
 import taichi as ti
 
@@ -152,29 +151,45 @@ def gaussian_splat_render(
     return frame.astype(np.float32)
 
 
-def try_encode_video_with_ffmpeg(frames_dir: Path, fps: int, output_video: Path) -> bool:
-    if shutil.which("ffmpeg") is None:
+def encode_video_with_opencv(frames_dir: Path, fps: int, output_video: Path) -> bool:
+    frame_files = sorted(frames_dir.glob("*.png"))
+    if len(frame_files) == 0:
+        print(f"No PNG frames found in: {frames_dir}")
         return False
 
-    output_video.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-framerate",
-        str(fps),
-        "-i",
-        str(frames_dir / "%06d.png"),
-        "-pix_fmt",
-        "yuv420p",
-        "-vcodec",
-        "libx264",
-        str(output_video),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print("ffmpeg encode failed:")
-        print(proc.stderr[-2000:])
+    first = cv2.imread(str(frame_files[0]))
+    if first is None:
+        print(f"Failed to read first frame: {frame_files[0]}")
         return False
+
+    h, w = first.shape[:2]
+    output_video.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(output_video),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (w, h),
+    )
+    if not writer.isOpened():
+        print(f"Failed to open VideoWriter: {output_video}")
+        return False
+
+    written = 0
+    for frame_file in frame_files:
+        img = cv2.imread(str(frame_file))
+        if img is None:
+            continue
+        if img.shape[0] != h or img.shape[1] != w:
+            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+        writer.write(img)
+        written += 1
+    writer.release()
+
+    if written == 0:
+        print(f"No readable frames in: {frames_dir}")
+        return False
+
+    print(f"Video encoded with OpenCV: {output_video} (frames={written}, fps={fps}, size={w}x{h})")
     return True
 
 
@@ -210,7 +225,7 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", default="", help="Directory for rendered PNG frames")
-    parser.add_argument("--video_path", default="", help="Output mp4 path; ffmpeg is used if available")
+    parser.add_argument("--video_path", default="", help="Output mp4 path; encoded from PNG frames using OpenCV")
     parser.add_argument(
         "--invisible_objects",
         default="",
@@ -309,13 +324,13 @@ def main():
         ti.tools.imwrite(frame_for_taichi, str(frame_file))
         print(f"[{frame_idx + 1}/{args.frames}] wrote {frame_file}")
 
-    encoded = try_encode_video_with_ffmpeg(output_dir, args.fps, output_video)
+    encoded = encode_video_with_opencv(output_dir, args.fps, output_video)
     if encoded:
-        print(f"Video encoded: {output_video}")
+        print(f"Video ready: {output_video}")
     else:
-        print("ffmpeg not available or encoding failed; PNG frame sequence is still available:")
+        print("OpenCV encoding failed; PNG frame sequence is still available:")
         print(output_dir)
-        print(f"Use ffmpeg manually, for example:\nffmpeg -y -framerate {args.fps} -i {output_dir / '%06d.png'} -pix_fmt yuv420p -vcodec libx264 {output_video}")
+        print(f"Use OpenCV or ffmpeg manually on {output_dir}")
 
 
 if __name__ == "__main__":

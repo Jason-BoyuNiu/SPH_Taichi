@@ -46,6 +46,26 @@ python run_simulation.py --scene_file ./data/scenes/armadillo_bath_dynamic.json
 ```
 
 
+## Gaussian Rendering Scripts
+
+The repository also includes offline Gaussian-splat rendering entry points:
+
+- `run_simulation_gaussian.py`: general Gaussian renderer with depth-aware bilateral smoothing.
+- `run_simulation_gaussian_smallkernel.py`: small-kernel preset for tighter splat footprints and cleaner silhouettes.
+- `run_simulation_gaussian_user.py`: extended optics experiment script (surface-aware controls, chromatic dispersion, etc.).
+
+Example (`smallkernel`):
+
+```bash
+python run_simulation_gaussian_smallkernel.py \
+  --scene_file ./data/scenes/dragon_bath.json \
+  --frames 240 \
+  --fps 30 \
+  --video_path ./outputs/dragon_bath_smallkernel.mp4
+```
+
+`run_simulation_gaussian_smallkernel.py` only requires particle positions/colors and particle normals (`ps.normal` from `compute_surface_normals`). It does not require the extra surface classification fields (`surface_neighbor_count`, `surface_gradient`, `surface_score`).
+
 ## Reference
 1. M. Becker and M. Teschner (2007). "Weakly compressible SPH for free surface flows". In:Proceedings of the 2007 ACM SIGGRAPH/Eurographics symposium on Computer animation. Eurographics Association, pp. 209–217.
 2. N. Akinci, M. Ihmsen, G. Akinci, B. Solenthaler, and M. Teschner. 2012. Versatile

@@ -93,18 +93,18 @@ python run_simulation_gaussian.py --scene_file ./data/scenes/dragon_bath_dfsph.j
 结果如下:
 - fixed_checker.mp4  
 <video width="640" height="480" controls>
-  <source src="./results/rotated_fixed_checker.mp4" type="video/mp4">
+  <source src="../results/rotated_fixed_checker.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 
 - loosen_checker.mp4  
 <video width="640" height="480" controls>
-  <source src="./results/rotated_loosen_checker.mp4" type="video/mp4">
+  <source src="../results/rotated_loosen_checker.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 
 - loosen_studio.mp4  
 <video width="640" height="480" controls>
-  <source src="./results/rotated_loosen_studio.mp4" type="video/mp4">
+  <source src="../results/rotated_loosen_studio.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>

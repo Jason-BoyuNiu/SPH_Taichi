@@ -419,8 +419,10 @@ class ParticleSystem:
                                 r = x_i - self.x[p_j]
                                 r_len = r.norm()
                                 if 1e-6 < r_len and r_len < h:
-                                    q = 1.0 - r_len / h
-                                    n += (r / r_len) * (q * q)
+                                    # Cubic spline kernel derivative weight (Müller colour-field gradient).
+                                    q = r_len / h  # 0 at centre, 1 at boundary
+                                    dW = q * (3.0 * q - 4.0)  # peak magnitude at q = 2/3
+                                    n += (r / r_len) * (-dW)
                                     cnt += 1
                 if cnt >= min_neighbors and n.norm() > 1e-6:
                     self.normal[p_i] = n.normalized()

@@ -41,6 +41,35 @@ def world_to_camera(points_world: np.ndarray, eye: np.ndarray, basis: np.ndarray
     return (points_world - eye[None, :]) @ basis.T
 
 
+def kinetic_to_white_red_colors(
+    velocity: np.ndarray,
+    is_fluid: np.ndarray,
+    fallback_colors: np.ndarray,
+    high_percentile: float = 95.0,
+) -> np.ndarray:
+    if high_percentile < 0.0:
+        return fallback_colors.copy()
+
+    # Kinetic energy per unit mass: 0.5 * |v|^2
+    ke = 0.5 * np.sum(velocity * velocity, axis=1)
+    out = fallback_colors.copy()
+
+    fluid_idx = np.where(is_fluid)[0]
+    if fluid_idx.size == 0:
+        return out
+
+    fluid_ke = ke[fluid_idx]
+    ke_hi = np.percentile(fluid_ke, high_percentile)
+    ke_hi = max(float(ke_hi), 1e-8)
+    t = np.clip(fluid_ke / ke_hi, 0.0, 1.0)
+
+    # White (low) -> Red (high): [1,1,1] -> [1,0,0]
+    out[fluid_idx, 0] = 1.0
+    out[fluid_idx, 1] = 1.0 - t
+    out[fluid_idx, 2] = 1.0 - t
+    return out
+
+
 def normalize_last_dim(v: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     n = np.linalg.norm(v, axis=-1, keepdims=True)
     return v / np.maximum(n, eps)
@@ -331,10 +360,15 @@ def gaussian_splat_render(
     env_spec = sample_environment(reflect_dir, sun_power)
     specular = specular_strength * fresnel[..., None] * env_spec
 
-    fluid_rgb = diffuse + specular
     opacity = 1.0 - np.exp(-tau * opacity_gain)
     opacity *= mask.astype(np.float32)
-    frame = fluid_rgb * opacity[..., None] + background_image * (1.0 - opacity[..., None])
+    # Physically, surface reflection (specular) is additive and independent of volume thickness (opacity)
+    frame = diffuse * opacity[..., None] + background_image * (1.0 - opacity[..., None])
+    
+    # Use a smooth surface alpha to avoid chunky binary mask artifacts at the boundary silhouette
+    surface_alpha = 1.0 - np.exp(-tau * 20.0)
+    frame = frame + specular * surface_alpha[..., None]
+    
     frame = np.clip(frame, 0.0, 1.0)
     frame = np.power(frame, 1.0 / 2.2)
     return frame.astype(np.float32)

@@ -108,3 +108,28 @@ python run_simulation_gaussian.py --scene_file ./data/scenes/dragon_bath_dfsph.j
   <source src="../results/rotated_loosen_studio.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
+
+### 4）超高透明度与平滑表面高光优化 (进阶渲染修正)
+
+在后续调试与超高透明度测试中，我们进一步修复了以下两个影响渲染真实感的问题：
+
+#### 1. 动能染色覆盖问题（导致物理透明度失效）
+**问题**：即使调低了厚度累积系数（`alpha_scale`），水流依然呈现不透明的白色和红色。深入代码发现 `kinetic_to_white_red_colors` 函数会强制根据动能（velocity）将粒子染色，直接覆盖了水的本色属性，使得背景折射和透明度大打折扣。
+**修正**：在渲染流程中引入了屏蔽机制，当 `--kinetic_percentile < 0.0`（如设定为 `-1.0`）时，直接跳过动能染色步骤，保留流体的原始基础物理色（baseline buffer color），从而彻底恢复了纯粹基于 Beer-Lambert 吸收与 Snell 折射定律的真实水体透明质感。
+
+#### 2. 高光反射的"方块化/锯齿"边界伪影
+**问题**：在实现高透明水体（降低 `opacity_gain`）并增强表面高光反射时，水滴和流体边缘呈现出严重的锯齿状“方块”伪影（Cubic artifacts）。此时高光项（specular）被直接乘以一个强硬的二进制掩码 `mask.astype(np.float32)`，这破坏了高斯溅射本该平滑的边界衰减。
+**修正**：我们从物理层面解耦了“体积不透明度（opacity）”与“表面高光层”。纯净的水即使内部完全透明，其表面也依然应当产生明亮的镜面反射。为了消除硬阴影带来的锯齿伪影，我们引入了随厚度快速但连续变化的平滑高光掩码 `surface_alpha = 1.0 - np.exp(-tau * 20.0)`。使用这个平滑的 Alpha 层来调制高光，使得水体反光能够在极细微的飞沫和边界平滑过渡，完美消除了二值 Mask 切割造成的方块化现象。
+
+修正前/后的结果对比如下:
+- Before fix: 
+<video width="640" height="480" controls>
+  <source src="../results/basin/tune_ultra/L1p8_tw0p12_v3p2.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
+- After fix: 
+<video width="640" height="480" controls>
+  <source src="../results/basin/tune_fix/L1p8_tw0p12_v3p2.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
